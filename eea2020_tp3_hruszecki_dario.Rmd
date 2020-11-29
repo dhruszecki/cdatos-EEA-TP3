@@ -1,0 +1,484 @@
+---
+title: "EEA - TP3 - Regresión Lineal"
+author: "Darío Hruszecki"
+date: "11/28/2020"
+output:
+  html_document:
+    code_folding: "hide"
+    number_sections: FALSE
+    toc: yes
+    toc_depth: '6'
+    df_print: paged
+  html_notebook:
+    theme: spacelab
+    toc_depth: 6
+    toc: yes
+    toc_float: yes
+    df_print: paged
+---
+
+<style type="text/css">
+html,body {
+    height:100%;
+}
+div.main-container {
+  justify-content: center;
+  align-items: center;
+  max-width: 1600px;
+  margin-left: auto;
+  margin-right: auto;
+  justify-content:center;
+  align-items:center;
+  h1, .h1, h2, .h2, h3, .h3 {
+    margin-top: 84px;
+  }
+}
+.col-md-4 {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: #bdcebe;
+  height: 100%
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# EEA - TP3 - Regresíon lineal
+
+## LIBRERIAS
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(modelr)
+
+library(corrr)
+library(knitr)
+library(kableExtra)
+library(ggrepel)
+
+library(OneR)
+library(rlang)
+library(caret)
+library(here)
+library(ISLR)
+library(GGally)
+library(pROC)
+library(cowplot)
+```
+
+## RANDOM SEED
+```{r}
+set.seed(6719)
+```
+
+## DATOS
+
+_Dataset del Titanic, obtenido en Kaggle - Titanic: Machine Learning from Disaster. El mismo se encuentra ya particionado en subconjuntos de entrenamiento y testeo.
+El diccionario de datos se puede encontrar [aquí](https://www.kaggle.com/c/titanic/data)._
+
+## OBJETIVO
+_Crear un modelo de regresión logística para clasificar si una persona que viajaba a bordo del Titanic sobrevivió o no._
+
+## DATASET DE ENTRENAMIENTO
+
+### Preparación de datos
+
+##### Leer el archivo titanic_complete_train.csv y mostrar su estructura
+```{r}
+df_train <- read_csv(here("/ds/titanic_complete_train.csv"))
+glimpse(df_train)
+```
+##### Seleccionar las variables PassengerId, Survived, Pclass, Sex, Age, SibSp,Parch, Fare y Embarked.
+```{r}
+df = df_train %>%
+  select(PassengerId, Survived, Pclass, Sex,Age, SibSp, Parch, Fare, Embarked
+  )
+glimpse(df)
+```
+##### Transformar las variables Survived, Pclass y Embarked a factor.
+```{r}
+df = df %>%
+  mutate(Survived = factor(Survived), Pclass = factor(Pclass), Embarked = factor(Embarked))
+glimpse(df)
+```
+##### Realizar un gráfico de ggpairs para las variables Survived, Pclass, Sex, Age y Fare e interpretarlo.
+<div class = "row">
+  
+<div class = "col-md-8">
+```{r message=FALSE}
+df %>% select(Survived, Pclass, Sex, Age, Fare) %>% 
+  ggpairs(aes(color = Survived), progress = FALSE, upper = list(continuous = wrap( "cor",  size = 3,  hjust=0.8,  align_percent=0.15))) + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle=45,  vjust=0.5), legend.position = "bottom")
+```
+</div>
+
+<div class = "col-md-4">
+* _La cantidad de sobrevivientes es menor a la de aquellos que no sobrevivieron (a niveles generales)_
+* _Podemos observar que hay levemente mas sobrevivientes que no sobrevivientes para los pasajeros de primera clase_
+* _Hay cierta paridad entre sobrevivientes y fallecidos para los pasajeros de segunda clase_
+* _Hay una clara asimetría entre los pasajeros que no sobrevivieron y los que si para los pasajeros de tercera clase_
+* _Dentro de los sobrevivientes, el número de mujeres es superior al de los hombres. En cuanto a los no sobrevivientes, los hombres son significativamente más que las mujeres_
+* _Dentro de los pasajeros que no sobrevivieron, hay un gran número de fallecidos entre 20 y 40 años_
+* _Tambien podemos observar que un gran numero de  pasajeros que abonaron las tarifas más baratas no sobrevivieron_
+* _Dentro del titanic el número de pasajeros de tercera era ampliamente superior al de las otras clases (segunda y tercera). Se observa una cierta paridad entre los sobrevivientes por clase (aunque son mas los de primera clase)_
+* _Casi todas las mujeres de primera y segunda clase, parecen haber sobrevivido. En tercera clase parece que la relación es más cercana a 50-50_
+* _Hay presencia de outliers para nuestras variables **Fare** y **Age**_
+</div>
+</div>
+##### Mostrar la distribución de clase (Sobrevivientes vs No Sobrevivientes).
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+survival_distribution <- function(data) {
+data %>%  group_by(Survived) %>% 
+  summarise(sobrevivientes=n()) %>%
+  mutate(
+    Survived = ifelse(Survived == 0, "Fallecido", "Sobreviviente"),
+    porcentaje = (sobrevivientes / sum(sobrevivientes))* 100 
+  )
+} 
+
+survival_distribution(df)
+
+```
+</div>
+<div class = "col-md-4">
+* _Hay un total de 891 pasajeros_
+* _De los cuales tenemos Fallecidos 61.61% y Sobrevivientes 38.38%_
+</div>
+</div>
+##### Dividir al dataset en conjunto de entrenamiento (70% de los datos) y validación (30% de los datos). Volver a analizar la distribución de clase para chequear que sea aproximadamente igual entre ambos conjuntos y respecto a la distribución de clase que obtuvieron para todo el dataset completo.
+
+<div class = "row">
+  
+<div class = "col-md-8">
+```{r message=FALSE}
+train_val <- initial_split(df, prop = 0.7, strata = Survived)
+train_val
+```
+
+```{r message=FALSE}
+df_training <- training(train_val)
+print(cbind("Dimensiones training:", dim_desc(df_training)))
+```
+
+```{r message=FALSE}
+df_validation <- testing(train_val)
+print(cbind("Dimensiones validación:", dim_desc(df_validation)))
+```
+
+```{r message=FALSE}
+print(survival_distribution(df_training))
+```
+```{r message=FALSE}
+print(survival_distribution(df_validation))
+```
+</div>
+<div class = "col-md-4">
+* _De un total de 891 pasajeros 625 quedan para entrenamiento y 266 para validación_
+* _En la partición de entrenamiento la distribución es Fallecidos 61.6% y Sobrevivientes 38.4%_
+* _En la partición de validación la distribución es Fallecidos 61.65% y Sobrevivientes 38.35%_
+* _Ambas particiones respetan la distribución de clases del dataset completo_
+</div>
+</div>
+
+### Predicciones
+
+##### Realizar un modelo de regresión logística para predecir la supervivencia en función de Pclass, Sex y Age. Usar solo el dataset de entrenamiento.
+<div class = "row">
+<div class = "col-md-8">
+```{r}
+model_class_sex_age <- glm(Survived ~ Pclass + Sex + Age, data = df_training, family = 'binomial')
+
+tidy_mcsa = tidy(model_class_sex_age)
+tidy_mcsa
+```
+</div>
+<div class = "col-md-4">
+Interpretacion de los coeficientes:
+
+* _Todos nuestros coeficientes son estadísticamente significativos._
+* _*Intercept*: indica que las probabilidades de sobrevivir de un pasajero recien nacido (edad=0), de sexo femenino (basal) y que pertenece a primera clase (basal) aumenta en un factor de 3.53234387._
+* _*Pclass2*: indica que las probabilidades de sobrevivir para un pasajero que pertenece a segunda clase (manteniendose todas las otras variables constantes) disminuyen en un factor de 1.19745943._
+* _*Pclass3*: indica que las probabilidades de sobrevivir para un pasajero que pertenece a tercera clase (manteniendose todas las otras variables constantes) disminuyen en un factor de 2.48918143._
+* _*Sexmale*: indica que las probabilidades de sobrevivir para un pasajero que es hombre (manteniendose todas las otras variables constantes) disminuyen en un factor de 2.43509235._
+* _*Age*: un incremento en la edad del pasajero de un año (manteniendose todas las otras variables constantes) disminuyen en un factor de 0.03328677 las posibilidades de sobrevivir._
+</div>
+</div>
+
+##### ¿Quién tiene una mayor probabilidad de supervivencia? Rose que es una mujer de 17 años que viaja en primera clase o Jack que es un hombre de 20 años viajando en tercera clase.
+En base al modelo generado Rose, siendo mujer y viajando en primera clase,  tiene mayores probabilidades de sobrevivir que Jack, que era hombre y viajaba en tercera.
+
+### Generación de modelos
+
+##### Generar 3 modelos de regresión logística sobre el dataset de entrenamiento utilizando diferentes combinaciones de variables. Al menos dos modelos deben ser multivariados
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+formulas_logit <- formulas(
+  .response = ~ Survived,
+  sex_class_age = ~ Sex + Age + Pclass,
+  sex_class_age_fare = ~ Sex + Age + Pclass + Fare,
+  sex_class_age_sibsp_parch = ~ Sex + Age + Pclass + SibSp + Parch,
+  age_fare = ~ Age + Fare)
+
+formulas_logit
+```
+</div>
+<div class = "col-md-4">
+_Además del modelo generado anteriormente de *Sex*-*Age*-*Pclass*, se generaron 3 nuevos modelos con las siguientes combinaciones:_
+
+* *Sex*-*Age*-*Pclass*-*Fare*
+* *Sex*-*Age*-*Pclass*-*SibSp*-*Parch*
+* *Age*-*Fare*
+</div>
+</div>
+##### Ordenar por la deviance los 3 modelos creados en el punto 3)a) y el creado en el punto 2)a) y seleccionar el mejor modelo en términos de la deviance explicada.
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+models <- data_frame(formulas_logit) %>%
+  mutate(model = names(formulas_logit),
+    expression = paste(formulas_logit),
+    mod = map(formulas_logit, ~glm(., family = 'binomial', data = df_training)))
+
+model_evaluation <- models %>% mutate(glance = map(mod,glance))
+
+model_comparison <- model_evaluation %>% unnest(glance) %>%
+  mutate(perc_explained_dev = 1 - deviance/null.deviance) %>% 
+  select(-c(model, df.null, AIC, BIC)) %>% 
+  arrange(deviance)
+
+model_comparison %>% select(expression:perc_explained_dev)
+```
+</div>
+<div class = "col-md-4">
+_En terminos de la **deviance_explicada** todos los modelos que utilizan las variables **Sex**, **Age** y **Pclass** minimizan bien la **deviance**. Sin embargo, el que mejor explica la **deviance** es el modelo que utiliza las variables **Sex**, **Age**, **Pclass**, **SibSp** y  **Parch**_. 
+
+_Ahora respecto a la deviance nula, nuestro cuarto modelo (**Age** y **Fare**) reduce muy poco dicha **deviance**_.
+
+_Seleccionamos nuestro modelo *sex_class_age_sibsp_parch*_.
+</div>
+</div>
+
+### Evaluación del modelo
+
+##### Realizar el gráfico de curva ROC y obtener el AUC para el modelo elegido. Interpretar el gráfico.
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+models <- models %>% 
+  mutate(pred= map(mod, augment, type.predict = "response"))
+
+training_predictions = models %>% filter(model ==  'sex_class_age_sibsp_parch') %>% 
+  unnest(pred)
+
+training_predictions %>% select(Survived:.cooksd)
+```
+</div>
+<div class = "col-md-4">
+* _Se agregan las estimaciones sobre los modelos._
+* _Se realizan las estimaciones de dicho modelo sobre el entrenamiento._
+</div>
+</div>
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+roc_training <- roc(response = training_predictions$Survived, predictor = training_predictions$.fitted)
+
+ggroc(list(training=roc_training), size=1) + 
+  geom_abline(slope = 1, intercept = 1, linetype='dashed') +
+  theme_bw() + 
+  labs(title='Curvas ROC', color='Modelo')
+```
+
+```{r message=FALSE}
+print(paste('AUC: Modelo completo', round(roc_training$auc, 3)))
+```
+
+</div>
+<div class = "col-md-4">
+* _Este grafico representa la performance de nuestro modelo al analizar la evolución de la *sensibilidad* (tasa de verdaderos positivos) vs la *especifidad* (tasa de falsos positivos) a distintos umbrales de clasificación._
+
+* _De nuestro grafico podriamos analizar que existen puntos de corte que maximizan conjuntamente la *especificidad* y la *sensibilidad* en valores conjuntos cercanos o superiores a 75% (para cada metrica)._
+
+* _Acorde a este **AUC** nuestro modelo parece clasificar sobreviviente correctamentes a una tasa del 84.8%._
+</div>
+</div>
+
+##### Realizar un violin plot e interpretar.
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+ggplot(training_predictions, aes(x=Survived, y=.fitted, group=Survived, fill=factor(Survived))) + 
+  geom_violin() +
+  theme_bw() +
+  guides(fill=FALSE) +
+  labs(title='Violin plot', subtitle='Modelo sex_class_age_sibsp_parch', y='Predicted probability')
+```
+</div>
+<div class = "col-md-4">
+* _En este grafico podemos interpretar como se distribuyen la cantidad de observaciones por su clase real y la probabilidad que le asigna nuestro modelo._ Observamos:_
+* _Nuestro modelo parece clasificar correctamente los pasajeros que no sobrevivieron para todas las probabilidades inferiores a 0.25._
+* _Para las probabilidades en el rango [0.25; 0.5], parece clasificar de forma similar tanto a los sobrevivientes como a los no sobrevivientes (con un leve sesgo a clasificarlos como no sobrevivientes)._
+* _Para los valores superiores a 0.5 parece inclinarse mejor a clasificar a nuestros pasajeros como sobrevivientes._
+</div>
+</div>
+      
+### Elección del punto corte
+
+##### Sobre el dataset de VALIDACIÓN realizar un gráfico de Accuracy, Specificity, Recall y Precision en función del punto de corte.
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+# Creamos el modelo
+best_model <- glm(formulas_logit$sex_class_age_sibsp_parch, family = 'binomial', data = df_training)
+
+# Agregamos la predicciones al dataset de testeo
+validation_predictions = augment(x=best_model, newdata=df_validation, type.predict='response') 
+
+validation_predictions
+```
+
+
+```{r message=FALSE}
+# Vamos a generar un gráfico de **Accuracy, Specificity, Recall y Precision** para nuestras predicciones en entrenamiento y en validación.
+
+prediction_metrics <- function(cutoffs, predictions=validation_predictions) {
+  table <- predictions %>% 
+    mutate(predicted_class = if_else(.fitted > cutoffs, 1, 0) %>% as.factor(), Survived = factor(Survived))
+  
+  confusionMatrix(table$predicted_class, table$Survived, positive = "1") %>%
+    tidy() %>%
+    select(term, estimate) %>%
+    filter(term %in% c('accuracy', 'sensitivity', 'specificity', 'precision')) %>%
+    mutate(cutoff = cutoffs)
+}
+
+cutoffs = seq(0.01, 0.95, 0.01)
+
+logit_pred_train = map_dfr(cutoffs, prediction_metrics) %>% 
+  mutate(term=as.factor(term))
+
+logit_pred_val = map_dfr(cutoffs, prediction_metrics, predictions = validation_predictions) %>% 
+  mutate(term=as.factor(term))
+
+ggplot(
+  logit_pred_train, 
+  aes(cutoff, estimate, group=term, color=term)) + 
+  geom_line(size=1) +
+  theme_bw() +
+  labs(title= 'Accuracy, Sensitivity, Specificity y Precision', subtitle= 'Mejor Modelo en Entrenamiento', color="")
+
+ggplot(
+  logit_pred_val, 
+  aes(cutoff, estimate, group=term, color=term)) + 
+  geom_line(size=1) +
+  theme_bw() +
+  labs(title= 'Accuracy, Sensitivity, Specificity y Precision', subtitle= 'Mejor Modelo en Validación', color="")
+```
+</div>
+<div class = "col-md-4">
+
+</div>
+</div>
+
+##### Elegir un punto de corte y explicar su decisión.
+<div class = "row">
+<div class = "col-md-8">
+Expandimos nuestro grafico para evaluar mas de cerca los valores entre 0.38 y 0.43 (que es donde parecen cruzarse las curvas de *accuracy*, *specificity* y *sensitivity*).
+```{r}
+ggplot(
+  logit_pred_val %>% 
+  filter(cutoff >= 0.38 & cutoff <= 0.43), 
+  aes(cutoff, estimate, group=term, color=term)) + 
+  geom_line(size=1) +
+  theme_bw() +
+  labs(title= 'Accuracy, Sensitivity, Specificity y Precision', subtitle= 'Modelo completo en Validación (rango de corte [0.38; 0.43])', color="") 
+```
+</div>
+<div class = "col-md-4">
+* *Accuracy*: ${\displaystyle \mathrm {ACC} ={\frac {\mathrm {TP} +\mathrm {TN} }{\mathrm {P} +\mathrm {N} }}={\frac {\mathrm {TP} +\mathrm {TN} }{\mathrm {TP} +\mathrm {TN} * +\mathrm {FP} +\mathrm {FN} }}}$
+* *Precision*: ${\displaystyle \mathrm {PPV} ={\frac {\mathrm {TP} }{\mathrm {TP} +\mathrm {FP} }}=1-\mathrm {FDR} }$
+* *Sensitivity*: ${\displaystyle \mathrm {TPR} ={\frac {\mathrm {TP} }{\mathrm {P} }}={\frac {\mathrm {TP} }{\mathrm {TP} +\mathrm {FN} }}=1-\mathrm {FNR} }$
+* *Specificity*: ${\displaystyle \mathrm {TNR} ={\frac {\mathrm {TN} }{\mathrm {N} }}={\frac {\mathrm {TN} }{\mathrm {TN} +\mathrm {FP} }}=1-\mathrm {FPR} }$
+
+* _Al evaluar la evolución de las siguientes métricas de performance de nuestro modelos, decidimos seleccionar como punto de corte, aquel valor de *cutoff* en donde se * intersectan las curvas de *accuracy*, *specificity* y *sensitivity*_.
+* _Observamos que para este punto, **0.41**, obtenemos valores de *accuracy*, *specificity* y *sensitivity* superiores al 80% y un valor de *precision* de 72%._
+* _Con estos métricas, nos sentimos comodos en afirmar que nuestro modelo parece ser robusto._
+
+* _Obtenemos la matriz de confusión para nuestro punto de corte elegido (**0.41**)_
+</div>
+</div>
+      
+##### Obtener la matriz de confusión con el modelo y punto de corte elegidos. Interpretarla.
+<div class = "row">
+<div class = "col-md-8">
+```{r message=FALSE}
+cutoff = 0.41
+
+table <- validation_predictions %>% 
+    mutate(predicted_class = if_else(.fitted > cutoff, 1, 0) %>% as.factor(), Survived = factor(Survived))
+  
+confusionMatrix(table$predicted_class, table$Survived, positive = "1")
+```
+</div>
+<div class = "col-md-4">
+Podemos observar ahora la **matriz de confusion** para nuestro mejor modelo con el punto de corte en **0.41**. 
+Observamos que el *accuracy* de nuestro modelo es elevado 80.83%. Más aún, el *balanced accuracy* se encuentra en los mismos niveles 80.93%.
+Más aun, nuestro modelo presenta altos niveles de *sensitivity* 81.37% (tasa de verdaderos positivos) y de *specificity* 80.49% (tasa de falsos positivos).
+</div>
+</div>
+      
+
+## DATASET DE TESTEO
+### Evaluación del Modelo
+
+##### Leer el archivo titanic_complete_test.csv y transformar las variables Survived, Pclass y Embarked a factor.
+Cargamos nuestro dataset de titanic de test y convertimos nuestras variables **Survived**,  **Pclass** y **Embarked** como factor.
+```{r}
+titanic_test <- read_csv(here("/ds/titanic_complete_test.csv")) %>%
+  mutate(
+    Survived = factor(Survived),
+    Pclass = factor(Pclass),
+    Embarked = factor(Embarked)
+  )
+```
+
+##### Con el modelo y punto de corte elegidos clasificar a las personas del dataset de testing.
+```{r}
+# Agregamos la predicciones al dataset de testeo
+testing_predictions = augment(
+  x=best_model, 
+  newdata=titanic_test, 
+  type.predict='response'
+) 
+
+testing_results <- testing_predictions %>% 
+    mutate(predicted_class = if_else(.fitted > cutoff, 1, 0) %>% as.factor(),Survived = factor(Survived))
+```
+
+##### Obtener la matriz de confusión y comparar con la obtenida en el punto 5)c).
+<div class = "row">
+<div class = "col-md-8">
+```{r}
+confusionMatrix(
+  testing_results$predicted_class,
+  testing_results$Survived,
+  positive = "1"
+)
+```
+</div>
+<div class = "col-md-4">
+_Podemos observar que al aplicar nuestro modelo al dataset de testing, la performance obtenida es menor a la que conseguimos en validación. Sin embargo los niveles obtenidos de **accuracy**, **sensitivity** y **specificity** de nuestra matriz de confusión siguen siendo buenos (superiores al 73%)._
+</div>
+</div>
+
+```{r}
+sessionInfo()
+```
+
