@@ -512,15 +512,12 @@ datatable(testing_results, rownames = FALSE, filter="top", options = list(pageLe
 * _Se pueden visualizar las predicciones del modelo seleccionado sobre el dataset de testing._
 </div>
 </div>
+
 ##### Obtener la matriz de confusión y comparar con la obtenida en el punto 5)c).
 <div class = "row">
 <div class = "col-md-8">
 ```{r message=FALSE}
-confusionMatrix(
-  testing_results$predicted_class,
-  testing_results$Survived,
-  positive = "1"
-)
+confusionMatrix(testing_results$predicted_class, testing_results$Survived, positive = "1")
 ```
 </div>
 <div class = "col-md-4 blue">
